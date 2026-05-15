@@ -34,6 +34,8 @@ hubspot-automations/
 │   │   ├── follow-up-drafter.md
 │   │   ├── task-creator.md
 │   │   └── task-worker.md
+│   ├── memory/
+│   │   └── proposed-learnings.md   # agent-appended, human-reviewed weekly
 │   └── skills/
 │       └── fyxer-to-hubspot/
 │           └── SKILL.md
@@ -73,7 +75,7 @@ Paste this as the routine's top-level instruction:
 ```
 Check Microsoft 365 calendar for meetings that ended between 4 hours ago and 5 minutes ago (today only, Pacific time). The wide lookback is intentional — the fyxer-to-hubspot skill is idempotent (it checks for an existing Fyxer-meeting-ID Note on the matched deal before doing anything), so re-seeing the same meeting on later polls is safe and cheap.
 
-If none, output "No meetings to process" and stop. This is success.
+If none, output "No meetings to process" and stop. This is success — do not send an email, do not write to the repo.
 
 For each ended meeting:
 1. Skip if: solo event, focus time, blocked time, or no external attendees (no non-dialai.ca attendees).
@@ -81,11 +83,68 @@ For each ended meeting:
 
 The skill handles: pulling the Fyxer summary, matching the deal, idempotency check, logging the note, creating tasks, and dispatching task-worker subagents. If Fyxer doesn't have the summary yet for a given meeting, the skill returns cleanly and the next poll will retry — do not loop or wait.
 
-After processing all meetings, output one line:
-"Processed N meetings: X notes added, Y tasks created, Z waiting on Fyxer, W unmatched."
+Collect every task-worker's structured return value (task ID, classification, principal, summary, HubSpot URL, and optional proposed learning).
+
+## End-of-run actions (only if at least one task was actually processed)
+
+1. **Send a summary email** via Microsoft 365 from grady@dialai.ca to grady@dialai.ca. Subject: "[grace] <N> tasks processed across <M> meeting(s)". Body format:
+
+   ```
+   Meeting: <title> (<deal name>)
+     - <task summary> [classification, principal] — <HubSpot URL>
+     - <task summary> [classification, principal] — <HubSpot URL>
+
+   Meeting: <title> (<deal name>)
+     - ...
+
+   To redirect any task, edit its HubSpot body and add one of:
+     STOP                     (agent leaves it alone)
+     RETRY: <new context>     (agent re-runs with your context)
+     REDIRECT: <classification>  (agent overrides its classification)
+   ```
+
+   Skip the email entirely if zero tasks were processed this run.
+
+2. **Append any proposed learnings** to `.claude/memory/proposed-learnings.md` (one line each, ISO timestamp prefix). If any were appended, commit and push to the repo:
+
+   ```
+   git add .claude/memory/proposed-learnings.md
+   git commit -m "learning: <one-line summary or count if multiple>"
+   git push origin main
+   ```
+
+   If no learnings were proposed, do not touch the repo.
+
+3. **Output the run summary line** to the routine log:
+   "Processed N meetings: X notes added, Y tasks created, Z waiting on Fyxer, W unmatched, L learnings proposed."
 
 Do not ask for confirmation at any step. If a meeting can't be matched to a deal, log it and continue — don't stop.
 ```
+
+## Feedback loop — how Grady redirects the agent
+
+The "click to continue this subagent's thread" UX isn't directly available in Routines (subagent runs aren't exposed as resumable conversations). The practical equivalent runs through HubSpot task bodies and the end-of-run email:
+
+1. Each productive run sends one email to grady@dialai.ca with every task worked on, each linked to its HubSpot URL.
+2. To redirect any task, open it in HubSpot and add one of these markers to the body:
+   - `STOP` (on its own line) — agent never touches the task again
+   - `RETRY: <new context>` — agent re-runs the task with your additional context folded in
+   - `REDIRECT: <classification>` — agent overrides its own classification with the one you specify (e.g. `REDIRECT: prep_able`)
+3. The next routine firing (≤ 1 hour later) picks up the marker and acts on it.
+
+If you just want the agent to back off without specific instructions, any free-form edit to the task body that doesn't include a marker triggers the "human touched it, stand down" rule — same effect as `STOP` but you also leave a note for yourself.
+
+## Learning loop — how the agent suggests prompt updates
+
+`.claude/memory/proposed-learnings.md` is an advisory file the `task-worker` reads at the start of every invocation. The agent appends proposed learnings to it only when it spots a genuinely novel pattern (the prompt rules describe what qualifies). The orchestrator commits and pushes any new entries at the end of the run.
+
+Weekly review:
+1. Read the file.
+2. For any entry that captures a real rule, edit `.claude/agents/task-worker.md` to canonize it.
+3. Delete every entry from `proposed-learnings.md` once reviewed (good ones promoted, bad ones discarded).
+4. Commit and push.
+
+Expected volume: 0–2 entries per week once steady state is reached. If you see more than ~5 entries in a week, the prompt is rotting and needs a structural rewrite, not more rules.
 
 ## Communication policy
 
