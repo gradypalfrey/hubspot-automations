@@ -62,7 +62,7 @@ Create the routine at `claude.ai/code/routines`:
 | Name | `fyxer-to-hubspot-sync` |
 | Repository | `hubspot-automations` |
 | Connectors | Microsoft 365, HubSpot, Fyxer (remove all others) |
-| Trigger | Schedule: every 10 minutes, weekdays, 7:30 AM–2:00 PM Pacific + one sweep at 4:00 PM Pacific |
+| Trigger | Schedule: hourly at :00, weekdays, 8 AM–6 PM Pacific (Routines is capped at hourly firings as of May 2026) |
 | Model | Sonnet |
 | Allow unrestricted branch pushes | No |
 
@@ -101,6 +101,8 @@ Do not ask for confirmation at any step. If a meeting can't be matched to a deal
 
 ## Rollout
 
+**Latency expectation.** With hourly polling, a follow-up draft lands in Outlook on average ~30 min after the call ends, worst case ~60 min. Fyxer needs ~10–20 min to produce a summary, so a call ending at 9:05 typically gets caught by the 10:00 poll. The 4-hour lookback means a missed poll has 3 more chances to catch up.
+
 **Week 1 — Shadow mode.** Add a temporary rule to `task-worker`: "Instead of marking any task complete, append `[WOULD COMPLETE]` to the body and leave it open." Review everything daily.
 
 **Week 2 — Live for internal hygiene + drafts for external.** Remove the shadow rule. CRM hygiene goes live. Outlook drafts continue saving (never auto-sent). Grady + Adib do a 15-min Friday review.
@@ -114,6 +116,39 @@ Do not ask for confirmation at any step. If a meeting can't be matched to a deal
 - Routines is in research preview. API surface may shift. Monitor the Anthropic changelog.
 - No retry on task-worker failure. A failed run leaves a `[Auto]` task in HubSpot with no agent activity. Add a nightly cleanup routine after observing real failure modes for 1–2 weeks.
 - Teams send is not wired. Internal coordination ("ask Sepehr for an ETA") gets drafted into the task body for Grady to send.
+
+## Testing
+
+Run these in order before turning on the schedule.
+
+**1. Connector smoke test.** Open a regular claude.ai chat with HubSpot, Microsoft 365, and Fyxer connectors all enabled. Try:
+
+- *Fyxer:* "List my last 3 meetings and return their summaries. If the API supports structured action items, return those separately." — Note whether action items come back structured or only as prose. This determines whether the skill's "extract action items" step needs to do parsing.
+- *HubSpot:* "Find the open deal for [recent customer name]. Then show me the existing notes on that deal." — Confirms read access and deal-matching basics.
+- *HubSpot write:* "Create a task on deal [ID] titled '[Auto] connector test' due tomorrow, then delete it." — Confirms write scopes are live (this is the step that fails if Sensitive Data is enabled).
+- *Microsoft 365:* "Show me my calendar events from yesterday with their attendees." — Confirms calendar read.
+
+If any of these fail, fix the connector before going further.
+
+**2. Manual end-to-end on one real meeting.** Pick a customer meeting from earlier today. In claude.ai chat (with all three connectors), paste:
+
+```
+Use the fyxer-to-hubspot skill to process the meeting titled "<meeting title>" that ended at <time>.
+```
+
+The chat will execute the skill against the real services. Check:
+- Did the right deal get matched?
+- Did a Note land on it with the correct format (Fyxer meeting ID on line 1)?
+- Did tasks get created with `[Auto]` prefix?
+- Did each task body get classified and updated by `task-worker`?
+
+If anything looks off, you're tuning the prompts in the repo, not the routine itself.
+
+**3. Idempotency check.** Run the same prompt from step 2 a second time. The skill should detect the existing Note and skip. If it creates a duplicate Note, the idempotency check needs work.
+
+**4. Routine first run.** In `claude.ai/code/routines`, click "Run now" on the routine (or wait for the next scheduled hour). Watch the run log — you should see the orchestrator output land on the summary line. Check HubSpot for new Notes/tasks against meetings from today.
+
+**5. Shadow mode for week 1.** See the rollout section above. Don't let the agent close tasks until you've watched a week of behavior.
 
 ## Kill switch
 
