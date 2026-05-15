@@ -73,9 +73,9 @@ Create the routine at `claude.ai/code/routines`:
 Paste this as the routine's top-level instruction:
 
 ```
-Check Microsoft 365 calendar for meetings that ended between 4 hours ago and 5 minutes ago (today only, Pacific time). The wide lookback is intentional — the fyxer-to-hubspot skill is idempotent (it checks for an existing Fyxer-meeting-ID Note on the matched deal before doing anything), so re-seeing the same meeting on later polls is safe and cheap.
+Check Microsoft 365 calendar for meetings that ended between 4 hours ago and 5 minutes ago (today only, Pacific time). The wide lookback is intentional — the fyxer-to-hubspot skill is idempotent (it checks for an existing Fyxer-meeting-ID Note on the matched deal before doing anything), so re-seeing the same meeting on later polls is safe and cheap. The lookback is 4 hours (not 1) to absorb Fyxer summary delays and the occasional failed poll, not because the schedule is 4-hourly.
 
-If none, output "No meetings to process" and stop. This is success — do not send an email, do not write to the repo.
+If none, output "No meetings to process" and stop. This is success — do not write to the repo.
 
 For each ended meeting:
 1. Skip if: solo event, focus time, blocked time, or no external attendees (no non-dialai.ca attendees).
@@ -85,54 +85,39 @@ The skill handles: pulling the Fyxer summary, matching the deal, idempotency che
 
 Collect every task-worker's structured return value (task ID, classification, principal, summary, HubSpot URL, and optional proposed learning).
 
-## End-of-run actions (only if at least one task was actually processed)
+## End-of-run actions
 
-1. **Send a summary email** via Microsoft 365 from grady@dialai.ca to grady@dialai.ca. Subject: "[grace] <N> tasks processed across <M> meeting(s)". Body format:
+1. **Append any proposed learnings** to `.claude/memory/proposed-learnings.md` (one line each, ISO timestamp prefix). If any were appended, commit and push to the repo:
 
-   ```
-   Meeting: <title> (<deal name>)
-     - <task summary> [classification, principal] — <HubSpot URL>
-     - <task summary> [classification, principal] — <HubSpot URL>
-
-   Meeting: <title> (<deal name>)
-     - ...
-
-   To redirect any task, edit its HubSpot body and add one of:
-     STOP                     (agent leaves it alone)
-     RETRY: <new context>     (agent re-runs with your context)
-     REDIRECT: <classification>  (agent overrides its classification)
-   ```
-
-   Skip the email entirely if zero tasks were processed this run.
-
-2. **Append any proposed learnings** to `.claude/memory/proposed-learnings.md` (one line each, ISO timestamp prefix). If any were appended, commit and push to the repo:
-
-   ```
    git add .claude/memory/proposed-learnings.md
    git commit -m "learning: <one-line summary or count if multiple>"
    git push origin main
-   ```
 
    If no learnings were proposed, do not touch the repo.
 
-3. **Output the run summary line** to the routine log:
+2. **Output the run summary line** to the routine log:
    "Processed N meetings: X notes added, Y tasks created, Z waiting on Fyxer, W unmatched, L learnings proposed."
 
-Do not ask for confirmation at any step. If a meeting can't be matched to a deal, log it and continue — don't stop.
+Do not ask for confirmation at any step. If a meeting can't be matched to a deal, log it and continue — don't stop. Grady reviews work through a HubSpot saved view filtered to [Auto] tasks — no notifications are sent.
 ```
 
 ## Feedback loop — how Grady redirects the agent
 
-The "click to continue this subagent's thread" UX isn't directly available in Routines (subagent runs aren't exposed as resumable conversations). The practical equivalent runs through HubSpot task bodies and the end-of-run email:
+There is no notification channel. The single source of truth for agent activity is the HubSpot task list, accessed through a saved view.
 
-1. Each productive run sends one email to grady@dialai.ca with every task worked on, each linked to its HubSpot URL.
-2. To redirect any task, open it in HubSpot and add one of these markers to the body:
+**Daily review workflow:**
+
+1. Create a saved view in HubSpot: `task title contains "[Auto]" AND assigned to me AND status != completed`. Bookmark it on desktop, pin it in the HubSpot mobile app.
+2. Check the view twice a day: ~1 PM (after morning calls) and ~5 PM (end of day sweep).
+3. For each task, read the body. Then mark it done, leave it for tomorrow, or redirect the agent using a marker:
    - `STOP` (on its own line) — agent never touches the task again
    - `RETRY: <new context>` — agent re-runs the task with your additional context folded in
    - `REDIRECT: <classification>` — agent overrides its own classification with the one you specify (e.g. `REDIRECT: prep_able`)
-3. The next routine firing (≤ 1 hour later) picks up the marker and acts on it.
+4. The next routine firing (≤ 1 hour later) picks up the marker and acts on it.
 
-If you just want the agent to back off without specific instructions, any free-form edit to the task body that doesn't include a marker triggers the "human touched it, stand down" rule — same effect as `STOP` but you also leave a note for yourself.
+If you edit the task body in any way without a marker, the agent's "human touched it, stand down" rule triggers — same effect as `STOP` but you leave a note for yourself.
+
+If after 2–3 weeks you find yourself missing things because you forgot to check, that's the signal to add a notification channel (Teams webhook, push notification, email digest, etc.). Don't build it pre-emptively.
 
 ## Learning loop — how the agent suggests prompt updates
 
